@@ -1,0 +1,96 @@
+# Builds the crates and web frontend artifacts needed by the dev-games/alcom
+# ebuild in gentoo-zh/overlay.  Run it manually to create or refresh the
+# alcom-<version> release in this repository.  Both artifacts are
+# byte-reproducible for a given upstream tag, so re-running for the same
+# version yields identical tarballs.
+name: generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      TAG:
+        description: "upstream git tag, e.g. gui-v1.1.8"
+        required: true
+      P:
+        description: "P in ebuild, e.g. alcom-1.1.8"
+        required: true
+      ARTIFACT:
+        description: "artifact(s) to build"
+        type: choice
+        options:
+          - all
+          - crates
+          - web
+        default: all
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream repository
+        uses: actions/checkout@v4
+        with:
+          repository: vrc-get/vrc-get
+          ref: ${{ inputs.TAG }}
+          fetch-depth: 0
+          path: input
+
+      - name: Setup Node.js
+        if: ${{ inputs.ARTIFACT != 'crates' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: input/vrc-get-gui/package-lock.json
+
+      - name: Generate crates tarball
+        if: ${{ inputs.ARTIFACT != 'web' }}
+        run: |
+          set -euo pipefail
+          pip install pycargoebuild
+          curl -fsSLo /tmp/license-mapping.conf \
+            https://raw.githubusercontent.com/gentoo/gentoo/refs/heads/master/metadata/license-mapping.conf
+          cd input/vrc-get-gui
+          pycargoebuild --crate-tarball --crate-tarball-path "/tmp/${{ inputs.P }}-crates.tar.xz" \
+            --distdir /tmp --license-mapping /tmp/license-mapping.conf
+
+      - name: Generate web dist tarball
+        if: ${{ inputs.ARTIFACT != 'crates' }}
+        run: |
+          set -euo pipefail
+          cd input/vrc-get-gui
+          npm ci --no-audit --no-fund
+          npm run build:vite
+          tar --create --auto-compress --mtime=@0 --sort=name --owner=0 --group=0 --numeric-owner \
+            --file "/tmp/${{ inputs.P }}-web.tar.xz" out
+
+      - name: Publish release
+        run: |
+          set -euo pipefail
+          upstream_sha="$(git -C input rev-parse HEAD)"
+          files=( /tmp/$P-crates.tar.xz /tmp/$P-web.tar.xz )
+          args=()
+          for f in "${files[@]}"; do
+            [[ -f "$f" ]] && args+=( "$f" )
+          done
+          if [[ "${#args[@]}" -eq 0 ]]; then
+            echo "no artifact tarball produced" >&2
+            exit 1
+          fi
+          if ! gh release view "$P" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$P" --repo "$GITHUB_REPOSITORY" \
+              --title "$P" \
+              --notes "Build artifacts for $P from upstream tag $TAG ($upstream_sha), built $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          fi
+          gh release upload "$P" "${args[@]}" --repo "$GITHUB_REPOSITORY" --clobber
+        env:
+          TAG: ${{ inputs.TAG }}
+          P: ${{ inputs.P }}
+          GH_TOKEN: ${{ github.token }}
+          

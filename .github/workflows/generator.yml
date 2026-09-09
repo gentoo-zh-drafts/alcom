@@ -22,6 +22,17 @@ on:
           - crates
           - web
         default: all
+  workflow_call:
+    inputs:
+      TAG:
+        type: string
+        required: true
+      P:
+        type: string
+        required: true
+      ARTIFACT:
+        type: string
+        default: all
 
 permissions:
   contents: write

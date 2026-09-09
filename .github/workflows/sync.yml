@@ -1,0 +1,52 @@
+# Builds artifacts for upstream gui-v* tags that have no release here yet.
+# On the first run only the newest tag is picked up; afterwards every tag
+# newer than the newest existing release is built.
+name: Sync with upstream
+
+on:
+  schedule:
+    - cron: "40 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.diff.outputs.versions }}
+    steps:
+      - name: List upstream tags without a release
+        id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate 'repos/vrc-get/vrc-get/git/matching-refs/tags/gui-v' \
+            --jq '.[].ref | sub("refs/tags/gui-v"; "")' | grep -E '^[0-9]+(\.[0-9]+)*$' | sort -V > upstream.txt
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName \
+            --jq '.[].tagName | select(startswith("alcom-")) | sub("alcom-"; "")' | sort -V > ours.txt
+          if [[ -s ours.txt ]]; then
+            latest=$(tail -1 ours.txt)
+            { echo "$latest"; cat upstream.txt; } | sort -V | uniq \
+              | awk -v l="$latest" 'found { print } $0 == l { found = 1 }' > missing.txt
+          else
+            tail -1 upstream.txt > missing.txt
+          fi
+          echo "versions=$(jq -Rsc 'split("\n") | map(select(length > 0))' missing.txt)" >> "$GITHUB_OUTPUT"
+          echo "missing: $(tr '\n' ' ' < missing.txt)"
+
+  build:
+    needs: find
+    if: ${{ needs.find.outputs.versions != '[]' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        version: ${{ fromJSON(needs.find.outputs.versions) }}
+    uses: ./.github/workflows/generator.yml
+    with:
+      TAG: gui-v${{ matrix.version }}
+      P: alcom-${{ matrix.version }}
+      ARTIFACT: all

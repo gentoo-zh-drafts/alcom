@@ -4,6 +4,7 @@
 # byte-reproducible for a given upstream tag, so re-running for the same
 # version yields identical tarballs.
 name: generator
+run-name: ${{ inputs.P }} ${{ inputs.TAG }}
 
 on:
   workflow_dispatch:
